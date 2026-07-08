@@ -129,3 +129,113 @@ which case the user is shown an error message.
   placeholder.
 - The download is produced entirely in the browser via a Blob and an
   `<a download>` link, with no server involved.
+
+## Building This App With Zendesk App Builder
+
+The prompts below recreate this app inside
+[Zendesk App Builder](https://support.zendesk.com/hc/en-us/articles/9037913973146-Prompting-guidelines-and-examples-for-App-Builder).
+They follow Zendesk's recommended practice of building **iteratively**: start
+with a broad first version, then layer in data, formatting, and refinements one
+step at a time, reviewing the result after each prompt. Run them **in order** —
+each one assumes the previous prompts have already been applied.
+
+A few things to do outside the prompts, per Zendesk's guidance:
+
+- Set the app **name** ("WFM Custom Data Exporter") and **icon** from the
+  **Settings** tab rather than through a prompt.
+- App Builder apps run inside the Agent Workspace; this app lives in the top
+  **nav bar** location.
+- The WFM API is a private API App Builder does not know, so Prompt 3 includes a
+  sample request and response to teach it the shape — keep that detail intact.
+
+### Prompt 1 — Scaffold The App And Date Range Controls
+
+> Create a nav bar app called "WFM Custom Data Exporter" that lets a workforce
+> manager export a schedule to CSV. The app is used by WFM administrators to
+> verify published schedules against legal rules and forecasts in a spreadsheet.
+> For now, just build the controls: a date range picker with a start date and an
+> end date, and three buttons labeled "Generate", "Download CSV", and "Clear".
+> The picker must start with no dates selected. Validate that the selected range
+> is at most one calendar month (the end date must be on or before the start date
+> plus one month) and that the end date is on or after the start date; when the
+> range is invalid, disable the Generate button and show a warning message
+> explaining the one-month limit. Keep the controls centered, with the buttons in
+> a row below the date range picker.
+
+### Prompt 2 — Fetch Published Shifts And Approved Time Off
+
+> When the user clicks Generate, call the Zendesk WFM API to load the schedule
+> for the selected date range. Fetch published shifts with a POST request to
+> `/wfm/public/api/v1/shifts/fetch` sending a JSON body with `startDate`,
+> `endDate`, `published: 1`, a `page` number, and an `orderBy` of
+> `{ "column": "agentName", "direction": "asc" }`; page through the results using
+> the `page` field until you have collected `metadata.total` records. Also fetch
+> approved time off with a GET request to `/wfm/public/api/v2/timeOff`, passing
+> `startTime` and `endTime` as UNIX-second bounds of the range, `status=approved`,
+> and `perPage=50`; follow the `pagination.next` links until there are no more
+> pages. Make all of these calls as relative, same-origin URLs so Zendesk adds
+> the session automatically — do not send any Authorization header. While the
+> data is loading, show the Generate button in a loading state, and if the fetch
+> fails show an error message.
+
+### Prompt 3 — Resolve Agent Names And Emails
+
+> The shifts and time-off responses only include a numeric `agentId`, but I need
+> agent names and emails in the export. After fetching the schedule, collect the
+> distinct agent ids and look them up against the core Zendesk Users API with a
+> GET request to `/api/v2/users/show_many.json?ids=...`, batching at most 100 ids
+> per request. Treat the WFM `agentId` as the Zendesk user id. This lookup should
+> fail soft: if a lookup fails or an id cannot be resolved, still include that
+> agent using the `agentId` itself as the name placeholder and leaving the email
+> blank. Here is a sample of the users response so you know the shape:
+>
+> ```json
+> { "users": [ { "id": 376828556137, "name": "John Doe", "email": "john.doe@example.com" } ] }
+> ```
+
+### Prompt 4 — Build The Pivoted Schedule Grid
+
+> Now turn the data into a pivoted table with one row per agent and one column
+> per day. The first three columns are `agentId`, `Name`, and `Email`. After
+> those, add one column for each day in the selected range, in order. Each day
+> column has a two-line header: the weekday name (for example "Monday") on the
+> first line and the date as `M/D/YYYY` on the second line. Convert all shift and
+> time-off timestamps to UTC when deciding both the time shown and which day
+> column an entry belongs to. Only include a row for an agent who has at least one
+> shift or approved time off in the range, and sort the rows by name (falling back
+> to the agentId when there is no name). Display this table inside the app as a
+> preview.
+
+### Prompt 5 — Fill Each Day Cell With Shifts And Time Off
+
+> Fill each day cell using the agent's shifts and time off for that day. Show a
+> shift as its start and end time in 24-hour `HH:MM-HH:MM` form, for example
+> `09:00-17:00`. If an agent has more than one shift that day, list them all
+> separated by a comma and a space, sorted by start time, for example
+> `09:00-12:00, 13:00-17:00`. Show a full-day absence as the text `time off`, and
+> a partial absence as `time off HH:MM-HH:MM` using its start and end time. When a
+> day has both a shift and time off, show both in the same cell separated by a
+> comma, for example `09:00-17:00, time off`. Leave a cell completely empty when
+> there is nothing scheduled.
+
+### Prompt 6 — Download The CSV
+
+> When the user clicks Download CSV, generate a CSV file from the exact same data
+> shown in the preview table, including the two header rows (weekday names, then
+> the `M/D/YYYY` dates, with the first three columns blank on the second row).
+> Quote any cell that contains a comma, encode the file as UTF-8 with a byte-order
+> mark so it opens cleanly in Excel, and name the downloaded file
+> `wfm-schedule_<startDate>_<endDate>.csv`. Enable the Download CSV button only
+> after a schedule has been generated. The Clear button should reset the date
+> range to no selection and clear the preview table and any messages; keep it
+> disabled until a date is selected.
+
+### Prompt 7 — Cosmetic Refinements (Batched)
+
+> Make these appearance tweaks together: give the preview table a fixed height of
+> about 600 pixels with its own scrollbars so it never grows the whole page; keep
+> the header row and the agentId column visible (frozen) while scrolling; add a
+> horizontal scrollbar above the table as well as below it, kept in sync with the
+> table; style the Clear button as an outlined button in a red/danger color; and
+> show an informational message reading "No shifts or approved time off were found
+> for the selected range." when a generated export has no rows.
