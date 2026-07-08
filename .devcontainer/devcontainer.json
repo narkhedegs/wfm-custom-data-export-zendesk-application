@@ -1,0 +1,86 @@
+{
+  "name": "Development Container",
+
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+
+  // NET_ADMIN + NET_RAW let initialize-firewall.sh program iptables/ipset. We do
+  // NOT set no-new-privileges: the firewall relies on passwordless sudo, which
+  // that flag would break.
+  "runArgs": [
+    "--cap-add=NET_ADMIN",
+    "--cap-add=NET_RAW"
+  ],
+
+  "remoteUser": "dc-user",
+  "containerUser": "dc-user",
+
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "installOhMyZsh": true,
+      "configureZshAsDefaultShell": true,
+      "username": "dc-user",
+      "upgradePackages": false
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "version": "latest"
+    }
+  },
+
+  // Named volumes, never bind-mounted from the host. All use fixed names (no
+  // ${devcontainerId}) so they are SHARED across every project built from this
+  // template: log in to Claude/Codex/gh once, one shell history, one pnpm store.
+  // Trade-off: a compromised package in any project can read the shared tokens.
+  // The egress firewall remains the primary defense against exfiltration.
+  "mounts": [
+    "source=dc-claude,target=/home/dc-user/.claude,type=volume",
+    "source=dc-codex,target=/home/dc-user/.codex,type=volume",
+    "source=dc-gh,target=/home/dc-user/.config/gh,type=volume",
+    "source=dc-history,target=/commandhistory,type=volume",
+    "source=dc-pnpm-store,target=/home/dc-user/.local/share/pnpm,type=volume"
+  ],
+
+  "containerEnv": {
+    "NODE_USE_SYSTEM_CA": "1",
+    "HISTFILE": "/commandhistory/.zsh_history",
+    "PNPM_HOME": "/home/dc-user/.local/share/pnpm"
+  },
+  "remoteEnv": {
+    // Set on the HOST shell that launches VS Code. DC_AI_MODE is "personal"
+    // (own subscriptions, default) or "gateway"; the rest are only needed for
+    // gateway mode and are never committed.
+    "DC_AI_MODE": "${localEnv:DC_AI_MODE}",
+    "DC_AI_GATEWAY_URL": "${localEnv:DC_AI_GATEWAY_URL}",
+    "ANTHROPIC_AUTH_TOKEN": "${localEnv:ANTHROPIC_AUTH_TOKEN}",
+    "CODEX_OPENAI_API_KEY": "${localEnv:CODEX_OPENAI_API_KEY}"
+  },
+
+  "onCreateCommand": "bash .devcontainer/on-create.sh",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postStartCommand": "sudo /usr/local/bin/initialize-firewall.sh \"${DC_AI_GATEWAY_URL:-}\"",
+
+  "forwardPorts": [],
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "streetsidesoftware.code-spell-checker"
+      ],
+      "settings": {
+        "editor.fontSize": 18,
+        "terminal.integrated.fontSize": 16,
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": "explicit"
+        },
+        "terminal.integrated.defaultProfile.linux": "zsh"
+      }
+    }
+  }
+}

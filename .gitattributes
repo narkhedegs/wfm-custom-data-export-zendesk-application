@@ -1,0 +1,18 @@
+# Normalize line endings so the container builds identically on macOS, Windows,
+# and Linux. Files that run INSIDE the Linux container must be LF. CRLF (which
+# git can introduce on Windows checkout) breaks bash with "\r: command not found"
+# or "bad interpreter".
+* text=auto eol=lf
+
+# Shell scripts and container config: always LF, no exceptions.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.json          text eol=lf
+*.jsonc         text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+.gitattributes  text eol=lf
+.gitignore      text eol=lf
+
+# Docs
+*.md            text eol=lf
