@@ -16,3 +16,4 @@ Dockerfile      text eol=lf
 
 # Docs
 *.md            text eol=lf
+README.md       text eol=lf

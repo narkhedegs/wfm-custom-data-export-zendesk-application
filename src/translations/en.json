@@ -1,0 +1,8 @@
+{
+  "app": {
+    "name": "WFM Custom Data Exporter",
+    "short_description": "Export WFM schedules to CSV",
+    "long_description": "Select a date range (up to one month) and export the published WFM schedule and approved time off as a pivoted CSV.",
+    "installation_instructions": "No configuration required. Open the app from the top nav bar."
+  }
+}
