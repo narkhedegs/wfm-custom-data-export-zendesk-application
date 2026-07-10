@@ -157,6 +157,9 @@ A few things to do outside the prompts, per Zendesk's guidance:
   **nav bar** location.
 - The WFM API is a private API App Builder does not know, so Prompt 3 includes a
   sample request and response to teach it the shape — keep that detail intact.
+- The app settings introduced in Prompt 9 (maximum date range and the Debug
+  button toggle) are configured per installation from the **Settings** tab; the
+  prompt only declares them and wires the app to read their values.
 
 ### Prompt 1 — Scaffold The App And Date Range Controls
 
@@ -249,3 +252,60 @@ A few things to do outside the prompts, per Zendesk's guidance:
 > table; style the Clear button as an outlined button in a red/danger color; and
 > show an informational message reading "No shifts or approved time off were found
 > for the selected range." when a generated export has no rows.
+
+### Prompt 8 — Add A Published vs Current (Draft) Schedule Version Selector
+
+> Add a "Schedule Version" selector above the buttons, as a radio group with two
+> options: "Current (includes drafts)" and "Published only". Default to "Current
+> (includes drafts)". Below the radios, show a short helper line describing the
+> selected option: for Current, "The current working schedule managers see,
+> includes unpublished edits, marked “(draft)”."; for Published, "The committed
+> schedule only, as published to agents."
+>
+> This selector controls how shifts are fetched. For "Published only", keep
+> sending `published: 1` as before (the committed schedule). For "Current
+> (includes drafts)", omit the `published` field from the `/wfm/public/api/v1/shifts/fetch`
+> body entirely — this returns the union of published shifts plus unpublished
+> draft edits, which is exactly what a manager sees on the WFM Schedule page.
+> Editing a published shift in draft deletes its published parent, so the union
+> does not double-count edits, but de-duplicate the fetched shifts by their `id`
+> defensively so a shift is never counted twice. Each shift object includes a
+> boolean `published` field.
+>
+> In "Current (includes drafts)" mode only, mark each unpublished shift (where
+> `published` is false) in its day cell by appending " (draft)" after the time
+> range, for example `13:00-22:00 (draft)`; published shifts stay unmarked. In
+> "Published only" mode nothing is marked. This marker must appear identically in
+> both the preview table and the downloaded CSV. Time off is unaffected by the
+> selector — always fetch approved time off exactly as before.
+>
+> When the user changes the Schedule Version selector, or changes the date range,
+> clear any generated preview and disable the Download CSV button, so the shown
+> data always matches the current selection and a re-Generate is required. Record
+> the mode used to generate a preview: show it in the preview heading (for example
+> "Preview — Current (includes drafts) — 12 Agent(s)") and include it in the
+> download filename as `wfm-schedule_<mode>_<startDate>_<endDate>.csv`, where
+> `<mode>` is `draft` or `published`.
+
+### Prompt 9 — Add Configurable App Settings
+
+> Add two installation settings (app parameters) that the app reads at runtime,
+> and give each a label and help text for the Settings tab.
+>
+> The first, `max_range_days`, is a number that defaults to `31`. Use it as the
+> maximum selectable date-range length, measured as an inclusive count of days
+> (so August 1 to August 31 is 31 days). Replace the previous "one calendar
+> month" rule with this configurable limit everywhere it applies: the range is
+> valid only when the inclusive day count is at most `max_range_days` and the end
+> date is on or after the start date. Update the date-range field label to read
+> "Date Range (Max N Days)" and the invalid-range warning to reference N days,
+> where N is the configured value.
+>
+> The second, `show_debug_button`, is a checkbox that defaults to off. When it is
+> on, show a "Debug" button alongside the other buttons that downloads a JSON file
+> of the raw WFM API responses for the selected range (useful for
+> troubleshooting); when it is off, hide the button entirely.
+>
+> Read both settings from the app's installation metadata when the app loads, and
+> fall back to the defaults (31 days, Debug button hidden) while the metadata is
+> still loading or if it cannot be read.
