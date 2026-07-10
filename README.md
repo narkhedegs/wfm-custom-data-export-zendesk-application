@@ -77,13 +77,23 @@ the same day rather than replacing them:
 
 ### Scope: Which Schedule Data Counts
 
-#### Published Shifts Only
+#### Schedule Version: Published vs Current (Draft)
 
-`/v1/shifts/fetch` returns both published shifts and unpublished working copies
-unless it is told otherwise. Because the export is meant to reflect the schedule
-agents actually see, the app requests **published shifts only** by sending
-`published: 1`. This mirrors the committed schedule and avoids double-counting a
-shift that also exists as an in-progress draft.
+A **Schedule Version** selector controls which shifts the export reflects:
+
+- **Published only** — sends `published: 1`, returning the committed schedule
+  agents actually see. Nothing is marked.
+- **Current (includes drafts)** — omits the `published` param, which returns the
+  raw union of published shifts plus unpublished working copies. This
+  reproduces exactly (matched by shift `id`) the "current view" a manager sees
+  in the WFM Schedule page. Editing a published shift in draft deletes its
+  published parent, so the union does not double-count edits; unpublished
+  shifts are additionally de-duplicated by `id` defensively. Each unpublished
+  shift is suffixed with ` (draft)` in the cell (e.g. `13:00-22:00 (draft)`),
+  mirroring the yellow/white distinction of the WFM UI.
+
+Changing the selector (or the date range) clears any generated preview and
+requires a re-Generate, so the shown data always matches the current selection.
 
 #### Approved Time Off Only
 
@@ -190,7 +200,7 @@ A few things to do outside the prompts, per Zendesk's guidance:
 > blank. Here is a sample of the users response so you know the shape:
 >
 > ```json
-> { "users": [ { "id": 376828556137, "name": "John Doe", "email": "john.doe@example.com" } ] }
+> { "users": [{ "id": 376828556137, "name": "John Doe", "email": "john.doe@example.com" }] }
 > ```
 
 ### Prompt 4 — Build The Pivoted Schedule Grid

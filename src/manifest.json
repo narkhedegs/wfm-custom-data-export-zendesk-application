@@ -16,5 +16,19 @@
     }
   },
   "version": "1.0",
-  "frameworkVersion": "2.0"
+  "frameworkVersion": "2.0",
+  "parameters": [
+    {
+      "name": "max_range_days",
+      "type": "number",
+      "required": false,
+      "default": 31
+    },
+    {
+      "name": "show_debug_button",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    }
+  ]
 }

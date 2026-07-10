@@ -4,12 +4,15 @@ import { Grid, Row, Col } from '@zendeskgarden/react-grid'
 import { XL, MD } from '@zendeskgarden/react-typography'
 import { Button } from '@zendeskgarden/react-buttons'
 import { DatepickerRange } from '@zendeskgarden/react-datepickers'
-import { Field, Label, Input } from '@zendeskgarden/react-forms'
+import { Field, Fieldset, Label, Input, Radio } from '@zendeskgarden/react-forms'
 import { Table, Head, HeaderRow, HeaderCell, Body, Row as TRow, Cell } from '@zendeskgarden/react-tables'
 import { Alert } from '@zendeskgarden/react-notifications'
 import styled from 'styled-components'
+import { useSettings } from '../hooks/useSettings'
 import { fetchShifts, fetchTimeOff, resolveAgents } from '../../lib/wfmApi'
-import { buildSchedule, toCsv, isWithinOneMonth, rangeToTimestamps } from '../../lib/buildSchedule'
+import { buildSchedule, toCsv, isWithinMaxDays, rangeToTimestamps } from '../../lib/buildSchedule'
+// TEMPORARY DEBUG — remove with the Debug button below and src/lib/probe.js.
+import { runProbe } from '../../lib/probe'
 
 // A picked Date represents a calendar day; take its local Y/M/D as the day.
 function toDateStr(date) {
@@ -22,12 +25,16 @@ function toDateStr(date) {
 
 const NavBar = () => {
   const client = useClient()
+  const { showDebugButton, maxRangeDays } = useSettings()
 
   const [startValue, setStartValue] = useState(undefined)
   const [endValue, setEndValue] = useState(undefined)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [schedule, setSchedule] = useState(null) // { days, rows }
+  // 'draft' = the current view a manager sees (published + unpublished edits);
+  // 'published' = the committed schedule only. Defaults to the current view.
+  const [mode, setMode] = useState('draft')
 
   // A second horizontal scrollbar above the table, kept in sync with the table's
   // own scroll container so the user can scroll horizontally from the top too.
@@ -73,8 +80,8 @@ const NavBar = () => {
   const endDate = toDateStr(endValue)
 
   const rangeValid = useMemo(
-    () => Boolean(startValue) && Boolean(endValue) && isWithinOneMonth(startDate, endDate),
-    [startValue, endValue, startDate, endDate]
+    () => Boolean(startValue) && Boolean(endValue) && isWithinMaxDays(startDate, endDate, maxRangeDays),
+    [startValue, endValue, startDate, endDate, maxRangeDays]
   )
 
   const handleGenerate = async () => {
@@ -84,7 +91,7 @@ const NavBar = () => {
     try {
       const { startTime, endTime } = rangeToTimestamps(startDate, endDate)
       const [shifts, timeOff] = await Promise.all([
-        fetchShifts(client, startDate, endDate),
+        fetchShifts(client, startDate, endDate, mode),
         fetchTimeOff(client, startTime, endTime)
       ])
 
@@ -93,8 +100,10 @@ const NavBar = () => {
       )
 
       const agentMap = await resolveAgents(client, agentIds)
-      const model = buildSchedule({ shifts, timeOff, agentMap, startDate, endDate })
-      setSchedule(model)
+      const model = buildSchedule({ shifts, timeOff, agentMap, startDate, endDate, mode })
+      // Stamp the range + mode the model was built with, so the preview label
+      // and download filename always match the data (not a later toggle).
+      setSchedule({ ...model, mode, startDate, endDate })
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('Export failed', e)
@@ -111,11 +120,30 @@ const NavBar = () => {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `wfm-schedule_${startDate}_${endDate}.csv`
+    // Encode the generated mode + range so a Published and a Draft export of the
+    // same range are distinguishable on disk.
+    a.download = `wfm-schedule_${schedule.mode}_${schedule.startDate}_${schedule.endDate}.csv`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+  }
+
+  // TEMPORARY DEBUG — probe published:0/1/omitted + /l5/visible. Remove later.
+  const handleProbe = async () => {
+    setError('')
+    setLoading(true)
+    try {
+      const summary = await runProbe(client, startDate, endDate)
+      // eslint-disable-next-line no-console
+      console.log('WFM PROBE summary', summary)
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('Probe failed', e)
+      setError('Probe failed — see console.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handleClear = () => {
@@ -123,6 +151,21 @@ const NavBar = () => {
     setEndValue(undefined)
     setSchedule(null)
     setError('')
+  }
+
+  // Any change to the inputs (date range or mode) invalidates a generated
+  // preview: the shown data must always match the current selection, so we drop
+  // it and require a re-Generate. Prevents downloading e.g. Published data while
+  // the selector reads Draft.
+  const invalidatePreview = () => {
+    setSchedule(null)
+    setError('')
+  }
+
+  const handleModeChange = (next) => {
+    if (next === mode) return
+    setMode(next)
+    invalidatePreview()
   }
 
   const hasRows = schedule && schedule.rows.length > 0
@@ -139,13 +182,15 @@ const NavBar = () => {
       <Row justifyContent="center">
         <Col size="auto">
           <Field>
-            <Label>Date Range (Max One Month)</Label>
+            <Label>Date Range (Max {maxRangeDays} Days)</Label>
             <DatepickerRange
               startValue={startValue}
               endValue={endValue}
               onChange={({ startValue: s, endValue: e }) => {
                 if (s !== undefined) setStartValue(s)
                 if (e !== undefined) setEndValue(e)
+                // Changing the range invalidates any existing preview/download.
+                invalidatePreview()
               }}
             >
               <DateInputs>
@@ -163,6 +208,43 @@ const NavBar = () => {
       </Row>
 
       <Row justifyContent="center">
+        <Col size="auto">
+          <Fieldset>
+            <Fieldset.Legend>Schedule Version</Fieldset.Legend>
+            <ModeOptions>
+              <Field>
+                <Radio
+                  name="schedule-version"
+                  value="draft"
+                  checked={mode === 'draft'}
+                  disabled={loading}
+                  onChange={() => handleModeChange('draft')}
+                >
+                  <Label>Current (includes drafts)</Label>
+                </Radio>
+              </Field>
+              <Field>
+                <Radio
+                  name="schedule-version"
+                  value="published"
+                  checked={mode === 'published'}
+                  disabled={loading}
+                  onChange={() => handleModeChange('published')}
+                >
+                  <Label>Published only</Label>
+                </Radio>
+              </Field>
+            </ModeOptions>
+            <ModeHint>
+              {mode === 'draft'
+                ? 'The current working schedule managers see, includes unpublished edits, marked “(draft)”.'
+                : 'The committed schedule only, as published to agents.'}
+            </ModeHint>
+          </Fieldset>
+        </Col>
+      </Row>
+
+      <Row justifyContent="center">
         <ButtonBar>
           <Button isPrimary disabled={!rangeValid || loading} onClick={handleGenerate}>
             {loading ? 'Generating…' : 'Generate'}
@@ -173,6 +255,11 @@ const NavBar = () => {
           <Button isDanger disabled={!hasSelection || loading} onClick={handleClear}>
             Clear
           </Button>
+          {showDebugButton && (
+            <Button disabled={!rangeValid || loading} onClick={handleProbe}>
+              Debug
+            </Button>
+          )}
         </ButtonBar>
       </Row>
 
@@ -180,7 +267,7 @@ const NavBar = () => {
         <Row>
           <Col>
             <Alert type="warning">
-              Please select a range of at most one calendar month, with the end date on or after the start
+              Please select a range of at most {maxRangeDays} days, with the end date on or after the start
               date.
             </Alert>
           </Col>
@@ -206,7 +293,10 @@ const NavBar = () => {
       {hasRows && (
         <PreviewRow>
           <PreviewCol>
-            <MD isBold>Preview — {schedule.rows.length} Agent(s)</MD>
+            <MD isBold>
+              Preview — {schedule.mode === 'draft' ? 'Current (includes drafts)' : 'Published only'} —{' '}
+              {schedule.rows.length} Agent(s)
+            </MD>
             <TopScrollbar ref={topScrollRef}>
               <TopScrollSpacer style={{ width: tableWidth }} />
             </TopScrollbar>
@@ -274,6 +364,20 @@ const ButtonBar = styled.div`
   display: flex;
   justify-content: center;
   gap: ${(props) => props.theme.space.sm};
+`
+
+// The two schedule-version radios laid out horizontally.
+const ModeOptions = styled.div`
+  display: flex;
+  gap: ${(props) => props.theme.space.md};
+  margin-top: ${(props) => props.theme.space.xs};
+`
+
+// Small explanatory line under the version radios; reflects the active choice.
+const ModeHint = styled.div`
+  margin-top: ${(props) => props.theme.space.xs};
+  color: ${(props) => props.theme.palette.grey[600]};
+  font-size: ${(props) => props.theme.fontSizes.sm};
 `
 
 // The two range inputs side by side; the calendar opens below them as a popup.

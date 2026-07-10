@@ -17,33 +17,48 @@ const MAX_PAGES = 500
 const USERS_CHUNK = 100
 
 /**
- * Fetch every published shift in [startDate, endDate], following the paginated
+ * Fetch shifts in [startDate, endDate], following the paginated
  * `page`/`metadata.total` contract of POST /v1/shifts/fetch.
+ *
+ * Two modes, confirmed empirically against the live API (see repo memory):
+ *  - 'published': sends `published: 1` → the committed schedule only.
+ *  - 'draft': omits the `published` param → the raw union of published +
+ *    unpublished shifts. This reproduces exactly (by shift `id`) the "current
+ *    view" a manager sees in the WFM Schedule page. Editing a published shift
+ *    in draft deletes its published parent, so the union does not double-count
+ *    edits. We still de-duplicate by shift `id` defensively, because
+ *    "omit == union" is observed behavior, not a documented contract.
  *
  * @param {object} client  ZAF client
  * @param {string} startDate  YYYY-MM-DD
  * @param {string} endDate    YYYY-MM-DD
- * @returns {Promise<Array>} flat array of shift objects
+ * @param {'published'|'draft'} [mode='published']
+ * @returns {Promise<Array>} flat array of shift objects (each carries `id` and
+ *   a boolean `published` flag)
  */
-export async function fetchShifts(client, startDate, endDate) {
+export async function fetchShifts(client, startDate, endDate, mode = 'published') {
   const all = []
   let page = 1
 
   for (; page <= MAX_PAGES; page++) {
+    // 'draft' mode omits `published` entirely (the raw union); 'published'
+    // sends `published: 1` for the committed-only schedule.
+    const data = {
+      startDate,
+      endDate,
+      page,
+      // The live API requires orderBy (both column and direction) even though
+      // the swagger marks it optional; omitting it returns 422.
+      orderBy: { column: 'agentName', direction: 'asc' }
+    }
+    if (mode !== 'draft') data.published = 1
+
     const res = await client.request({
       url: `${WFM_BASE}/v1/shifts/fetch`,
       type: 'POST',
       contentType: 'application/json',
       httpCompleteResponse: false,
-      // The live API requires orderBy (both column and direction) even though
-      // the swagger marks it optional; omitting it returns 422.
-      data: JSON.stringify({
-        startDate,
-        endDate,
-        published: 1,
-        page,
-        orderBy: { column: 'agentName', direction: 'asc' }
-      })
+      data: JSON.stringify(data)
     })
 
     const body = parseBody(res)
@@ -57,7 +72,27 @@ export async function fetchShifts(client, startDate, endDate) {
     if (typeof total === 'number' && all.length >= total) break
   }
 
-  return all
+  // Defensive de-dup by shift id: the union should already be disjoint, but if
+  // the API ever returns a shift twice we must not double-count it in a cell.
+  return dedupeById(all)
+}
+
+// Remove duplicate shifts by their stable `id`, keeping first occurrence.
+// Shifts without an `id` are always kept (can't be judged duplicates).
+function dedupeById(shifts) {
+  const seen = new Set()
+  const out = []
+  for (const s of shifts) {
+    const id = s?.id
+    if (id == null) {
+      out.push(s)
+      continue
+    }
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push(s)
+  }
+  return out
 }
 
 /**

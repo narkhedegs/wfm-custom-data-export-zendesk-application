@@ -2,7 +2,17 @@
   "app": {
     "name": "WFM Custom Data Exporter",
     "short_description": "Export WFM schedules to CSV",
-    "long_description": "Select a date range (up to one month) and export the published WFM schedule and approved time off as a pivoted CSV.",
-    "installation_instructions": "No configuration required. Open the app from the top nav bar."
+    "long_description": "Select a date range and export the WFM schedule (published or current draft view) and approved time off as a pivoted CSV.",
+    "installation_instructions": "Optional: set the maximum selectable date-range length in days (default 31), and enable the Debug button for troubleshooting.",
+    "parameters": {
+      "max_range_days": {
+        "label": "Maximum date range (days)",
+        "helpText": "Largest date range a user can select, in days. Defaults to 31 (about one month)."
+      },
+      "show_debug_button": {
+        "label": "Show Debug button",
+        "helpText": "Adds a Debug button that downloads raw WFM API responses for troubleshooting. Off by default."
+      }
+    }
   }
 }

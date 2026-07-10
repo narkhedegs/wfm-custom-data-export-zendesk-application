@@ -60,18 +60,22 @@ export function enumerateDays(startDate, endDate) {
   return days
 }
 
+// Default maximum range length in days (≈ one calendar month). Configurable via
+// the `max_range_days` app setting.
+export const DEFAULT_MAX_RANGE_DAYS = 31
+
 /**
- * Validate the "maximum one calendar month" rule: endDate must be on or before
- * startDate + 1 month. Both args are 'YYYY-MM-DD'.
+ * Validate the maximum-range rule: the inclusive number of days from startDate
+ * to endDate must not exceed `maxDays`. Both dates are 'YYYY-MM-DD'.
+ * Aug 1 → Aug 31 counts as 31 days.
  */
-export function isWithinOneMonth(startDate, endDate) {
+export function isWithinMaxDays(startDate, endDate, maxDays = DEFAULT_MAX_RANGE_DAYS) {
   if (!startDate || !endDate) return false
   const start = dateToUtcMs(startDate)
   const end = dateToUtcMs(endDate)
   if (end < start) return false
-  const [y, m, d] = startDate.split('-').map(Number)
-  const maxMs = Date.UTC(y, m, d) // month index m == startMonth + 1
-  return end <= maxMs
+  const inclusiveDays = Math.round((end - start) / MS_PER_DAY) + 1
+  return inclusiveDays <= maxDays
 }
 
 // Inclusive UTC-second bounds for a 'YYYY-MM-DD'..'YYYY-MM-DD' range.
@@ -104,13 +108,23 @@ function isFullDay(req) {
  * @param {Map}     params.agentMap   agentId(string) -> { name, email }
  * @param {string}  params.startDate  'YYYY-MM-DD'
  * @param {string}  params.endDate    'YYYY-MM-DD'
+ * @param {'published'|'draft'} [params.mode='published']  In 'draft' mode,
+ *   unpublished shifts (`published === false`) are suffixed with ` (draft)` so
+ *   the export mirrors the white/yellow distinction of the WFM Schedule UI.
  * @returns {{days:Array, rows:Array}}
  */
-export function buildSchedule({ shifts = [], timeOff = [], agentMap = new Map(), startDate, endDate }) {
+export function buildSchedule({
+  shifts = [],
+  timeOff = [],
+  agentMap = new Map(),
+  startDate,
+  endDate,
+  mode = 'published'
+}) {
   const days = enumerateDays(startDate, endDate)
   const dayKeys = new Set(days.map((d) => d.key))
 
-  // agentId -> { shiftsByDay: Map<dayKey, [{start,end}]>, timeOffByDay: Map<dayKey, [text]> }
+  // agentId -> { shiftsByDay: Map<dayKey, [{start,end,draft}]>, timeOffByDay: Map<dayKey, [text]> }
   const agents = new Map()
 
   const ensure = (agentId) => {
@@ -119,14 +133,15 @@ export function buildSchedule({ shifts = [], timeOff = [], agentMap = new Map(),
     return agents.get(id)
   }
 
-  // Shifts
+  // Shifts. A shift is a draft when its `published` flag is explicitly false;
+  // only relevant in 'draft' mode (in 'published' mode everything is published).
   for (const s of shifts) {
     if (s.agentId == null || s.startTime == null || s.endTime == null) continue
     const key = tsToDayKey(s.startTime)
     if (!dayKeys.has(key)) continue
     const bucket = ensure(s.agentId).shiftsByDay
     if (!bucket.has(key)) bucket.set(key, [])
-    bucket.get(key).push({ start: s.startTime, end: s.endTime })
+    bucket.get(key).push({ start: s.startTime, end: s.endTime, draft: s.published === false })
   }
 
   // Time off
@@ -158,7 +173,12 @@ export function buildSchedule({ shifts = [], timeOff = [], agentMap = new Map(),
       if (shiftsToday) {
         shiftsToday
           .sort((a, b) => a.start - b.start)
-          .forEach((sh) => parts.push(`${tsToHHMM(sh.start)}-${tsToHHMM(sh.end)}`))
+          .forEach((sh) => {
+            const range = `${tsToHHMM(sh.start)}-${tsToHHMM(sh.end)}`
+            // In draft mode, mark unpublished shifts so analysts can tell the
+            // committed schedule from in-progress edits (mirrors the UI's yellow).
+            parts.push(mode === 'draft' && sh.draft ? `${range} (draft)` : range)
+          })
       }
       const timeOffToday = data.timeOffByDay.get(day.key)
       if (timeOffToday) parts.push(...timeOffToday)
