@@ -25,6 +25,12 @@
       "default": 31
     },
     {
+      "name": "export_timezone",
+      "type": "text",
+      "required": false,
+      "default": "Europe/Warsaw"
+    },
+    {
       "name": "show_debug_button",
       "type": "checkbox",
       "required": false,

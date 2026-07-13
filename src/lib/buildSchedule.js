@@ -2,14 +2,22 @@
  * Pure schedule-building logic: turn raw WFM shifts + time off into a pivoted
  * model (one row per agent, one column per day) and serialize it to CSV.
  *
- * All time math is done in **UTC** — both the HH:MM rendering and the decision
- * of which day-column a shift/time-off falls into. This keeps exports
- * reproducible regardless of who runs them or where.
+ * All wall-clock math is done in a configurable IANA timezone (the
+ * `export_timezone` app setting, default Europe/Warsaw) — both the HH:MM
+ * rendering AND the decision of which day-column a shift/time-off falls into,
+ * plus the time-off fetch window bounds. Using a fixed named zone (rather than
+ * the runner's browser) keeps exports reproducible while matching the local
+ * times a scheduler sees in the WFM UI. IANA zones are DST-correct (Warsaw is
+ * UTC+1 in winter, UTC+2 in summer).
  */
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const MS_PER_DAY = 86400000
 const MAX_DAYS = 400 // guard against a pathological range
+
+// Default timezone the schedule is interpreted in. Configurable via the
+// `export_timezone` app setting.
+export const DEFAULT_TIMEZONE = 'Europe/Warsaw'
 
 // --- date / time helpers ---------------------------------------------------
 
@@ -17,27 +25,85 @@ function pad2(n) {
   return String(n).padStart(2, '0')
 }
 
-// 'YYYY-MM-DD' -> UTC midnight ms
+// 'YYYY-MM-DD' -> UTC midnight ms. Used only for calendar-date arithmetic
+// (range length, day iteration, weekday) which is timezone-independent.
 function dateToUtcMs(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number)
   return Date.UTC(y, m - 1, d)
 }
 
-// UTC ms -> 'YYYY-MM-DD'
+// UTC ms -> 'YYYY-MM-DD' (calendar-date label; zone-independent).
 function utcMsToKey(ms) {
   const dt = new Date(ms)
   return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`
 }
 
-// unix seconds -> day key ('YYYY-MM-DD') in UTC
-function tsToDayKey(unixSeconds) {
-  return utcMsToKey(unixSeconds * 1000)
+// Cache one Intl.DateTimeFormat per zone — formatToParts is called per shift.
+const _dtfCache = new Map()
+function dtfFor(timeZone) {
+  let dtf = _dtfCache.get(timeZone)
+  if (!dtf) {
+    dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    })
+    _dtfCache.set(timeZone, dtf)
+  }
+  return dtf
 }
 
-// unix seconds -> 'HH:MM' in UTC
-export function tsToHHMM(unixSeconds) {
-  const dt = new Date(unixSeconds * 1000)
-  return `${pad2(dt.getUTCHours())}:${pad2(dt.getUTCMinutes())}`
+// Absolute instant (ms) -> its wall-clock parts in `timeZone`, as numbers.
+function zonedParts(unixMs, timeZone) {
+  const parts = {}
+  for (const p of dtfFor(timeZone).formatToParts(new Date(unixMs))) {
+    if (p.type !== 'literal') parts[p.type] = p.value
+  }
+  let hour = parseInt(parts.hour, 10)
+  if (hour === 24) hour = 0 // some engines emit '24' for midnight under h23
+  return {
+    year: parseInt(parts.year, 10),
+    month: parseInt(parts.month, 10),
+    day: parseInt(parts.day, 10),
+    hour,
+    minute: parseInt(parts.minute, 10),
+    second: parseInt(parts.second, 10)
+  }
+}
+
+// unix seconds -> day key ('YYYY-MM-DD') in `timeZone`.
+function tsToDayKey(unixSeconds, timeZone = 'UTC') {
+  const p = zonedParts(unixSeconds * 1000, timeZone)
+  return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`
+}
+
+// unix seconds -> 'HH:MM' in `timeZone`.
+export function tsToHHMM(unixSeconds, timeZone = 'UTC') {
+  const p = zonedParts(unixSeconds * 1000, timeZone)
+  return `${pad2(p.hour)}:${pad2(p.minute)}`
+}
+
+// Offset (ms) between `timeZone`'s wall clock and UTC at the given instant.
+function zoneOffsetMs(utcMs, timeZone) {
+  const p = zonedParts(utcMs, timeZone)
+  const asIfUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second)
+  return asIfUtc - utcMs
+}
+
+// Wall-clock time in `timeZone` -> the UTC instant (ms). Two-pass correction
+// handles DST transitions (offset differs before/after the guess).
+function zonedWallToUtcMs(y, mo, d, hh, mm, ss, timeZone) {
+  const guess = Date.UTC(y, mo - 1, d, hh, mm, ss)
+  const off1 = zoneOffsetMs(guess, timeZone)
+  let result = guess - off1
+  const off2 = zoneOffsetMs(result, timeZone)
+  if (off2 !== off1) result = guess - off2
+  return result
 }
 
 /**
@@ -78,11 +144,18 @@ export function isWithinMaxDays(startDate, endDate, maxDays = DEFAULT_MAX_RANGE_
   return inclusiveDays <= maxDays
 }
 
-// Inclusive UTC-second bounds for a 'YYYY-MM-DD'..'YYYY-MM-DD' range.
-export function rangeToTimestamps(startDate, endDate) {
-  const startTime = Math.floor(dateToUtcMs(startDate) / 1000)
-  // end of endDate = start of the following day minus 1 second
-  const endTime = Math.floor((dateToUtcMs(endDate) + MS_PER_DAY) / 1000) - 1
+// Inclusive UNIX-second bounds for a 'YYYY-MM-DD'..'YYYY-MM-DD' range, taken as
+// midnight-to-midnight in `timeZone` (so the fetch window lines up with the
+// zone's calendar days — the same days the export buckets into).
+export function rangeToTimestamps(startDate, endDate, timeZone = 'UTC') {
+  const [sy, sm, sd] = startDate.split('-').map(Number)
+  const [ey, em, ed] = endDate.split('-').map(Number)
+  // Start = 00:00:00 of startDate in the zone.
+  const startMs = zonedWallToUtcMs(sy, sm, sd, 0, 0, 0, timeZone)
+  // End = 23:59:59 of endDate in the zone (start of next day minus 1s).
+  const endNextMidnight = zonedWallToUtcMs(ey, em, ed + 1, 0, 0, 0, timeZone)
+  const startTime = Math.floor(startMs / 1000)
+  const endTime = Math.floor(endNextMidnight / 1000) - 1
   return { startTime, endTime }
 }
 
@@ -111,6 +184,8 @@ function isFullDay(req) {
  * @param {'published'|'draft'} [params.mode='published']  In 'draft' mode,
  *   unpublished shifts (`published === false`) are suffixed with ` (draft)` so
  *   the export mirrors the white/yellow distinction of the WFM Schedule UI.
+ * @param {string} [params.timeZone='UTC']  IANA zone for HH:MM rendering and
+ *   day-column bucketing (e.g. 'Europe/Warsaw').
  * @returns {{days:Array, rows:Array}}
  */
 export function buildSchedule({
@@ -119,7 +194,8 @@ export function buildSchedule({
   agentMap = new Map(),
   startDate,
   endDate,
-  mode = 'published'
+  mode = 'published',
+  timeZone = 'UTC'
 }) {
   const days = enumerateDays(startDate, endDate)
   const dayKeys = new Set(days.map((d) => d.key))
@@ -137,7 +213,7 @@ export function buildSchedule({
   // only relevant in 'draft' mode (in 'published' mode everything is published).
   for (const s of shifts) {
     if (s.agentId == null || s.startTime == null || s.endTime == null) continue
-    const key = tsToDayKey(s.startTime)
+    const key = tsToDayKey(s.startTime, timeZone)
     if (!dayKeys.has(key)) continue
     const bucket = ensure(s.agentId).shiftsByDay
     if (!bucket.has(key)) bucket.set(key, [])
@@ -150,9 +226,11 @@ export function buildSchedule({
     const fullDay = isFullDay(req)
     for (const block of timeOffBlocks(req)) {
       if (block.startTime == null) continue
-      const key = tsToDayKey(block.startTime)
+      const key = tsToDayKey(block.startTime, timeZone)
       if (!dayKeys.has(key)) continue
-      const text = fullDay ? 'time off' : `time off ${tsToHHMM(block.startTime)}-${tsToHHMM(block.endTime)}`
+      const text = fullDay
+        ? 'time off'
+        : `time off ${tsToHHMM(block.startTime, timeZone)}-${tsToHHMM(block.endTime, timeZone)}`
       const bucket = ensure(req.agentId).timeOffByDay
       if (!bucket.has(key)) bucket.set(key, [])
       bucket.get(key).push(text)
@@ -174,7 +252,7 @@ export function buildSchedule({
         shiftsToday
           .sort((a, b) => a.start - b.start)
           .forEach((sh) => {
-            const range = `${tsToHHMM(sh.start)}-${tsToHHMM(sh.end)}`
+            const range = `${tsToHHMM(sh.start, timeZone)}-${tsToHHMM(sh.end, timeZone)}`
             // In draft mode, mark unpublished shifts so analysts can tell the
             // committed schedule from in-progress edits (mirrors the UI's yellow).
             parts.push(mode === 'draft' && sh.draft ? `${range} (draft)` : range)

@@ -9,6 +9,10 @@
         "label": "Maximum date range (days)",
         "helpText": "Largest date range a user can select, in days. Defaults to 31 (about one month)."
       },
+      "export_timezone": {
+        "label": "Export time zone",
+        "helpText": "IANA time zone (e.g. Europe/Warsaw, UTC, America/New_York) used for shift times and day columns, so the export matches the WFM UI. Defaults to Europe/Warsaw."
+      },
       "show_debug_button": {
         "label": "Show Debug button",
         "helpText": "Adds a Debug button that downloads raw WFM API responses for troubleshooting. Off by default."

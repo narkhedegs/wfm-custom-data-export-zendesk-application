@@ -25,7 +25,7 @@ function toDateStr(date) {
 
 const NavBar = () => {
   const client = useClient()
-  const { showDebugButton, maxRangeDays } = useSettings()
+  const { showDebugButton, maxRangeDays, timeZone } = useSettings()
 
   const [startValue, setStartValue] = useState(undefined)
   const [endValue, setEndValue] = useState(undefined)
@@ -89,7 +89,7 @@ const NavBar = () => {
     setSchedule(null)
     setLoading(true)
     try {
-      const { startTime, endTime } = rangeToTimestamps(startDate, endDate)
+      const { startTime, endTime } = rangeToTimestamps(startDate, endDate, timeZone)
       const [shifts, timeOff] = await Promise.all([
         fetchShifts(client, startDate, endDate, mode),
         fetchTimeOff(client, startTime, endTime)
@@ -100,10 +100,11 @@ const NavBar = () => {
       )
 
       const agentMap = await resolveAgents(client, agentIds)
-      const model = buildSchedule({ shifts, timeOff, agentMap, startDate, endDate, mode })
-      // Stamp the range + mode the model was built with, so the preview label
-      // and download filename always match the data (not a later toggle).
-      setSchedule({ ...model, mode, startDate, endDate })
+      const model = buildSchedule({ shifts, timeOff, agentMap, startDate, endDate, mode, timeZone })
+      // Stamp the range + mode + timezone the model was built with, so the
+      // preview label and download filename always match the data (not a later
+      // toggle or a settings change after generation).
+      setSchedule({ ...model, mode, startDate, endDate, timeZone })
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error('Export failed', e)
@@ -295,7 +296,7 @@ const NavBar = () => {
           <PreviewCol>
             <MD isBold>
               Preview — {schedule.mode === 'draft' ? 'Current (includes drafts)' : 'Published only'} —{' '}
-              {schedule.rows.length} Agent(s)
+              {schedule.rows.length} Agent(s) — times in {schedule.timeZone}
             </MD>
             <TopScrollbar ref={topScrollRef}>
               <TopScrollSpacer style={{ width: tableWidth }} />

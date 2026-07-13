@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useClient } from './useClient'
-import { DEFAULT_MAX_RANGE_DAYS } from '../../lib/buildSchedule'
+import { DEFAULT_MAX_RANGE_DAYS, DEFAULT_TIMEZONE } from '../../lib/buildSchedule'
 
 /**
  * Read the app's installation settings (manifest `parameters`) via
@@ -8,6 +8,7 @@ import { DEFAULT_MAX_RANGE_DAYS } from '../../lib/buildSchedule'
  *
  *  - showDebugButton {boolean}  gates the temporary Debug probe button.
  *  - maxRangeDays    {number}   max selectable date-range length, in days.
+ *  - timeZone        {string}   IANA zone the schedule is rendered/bucketed in.
  *
  * While metadata is loading (or if it fails), returns the defaults so the app
  * stays usable.
@@ -16,7 +17,8 @@ export function useSettings() {
   const client = useClient()
   const [settings, setSettings] = useState({
     showDebugButton: false,
-    maxRangeDays: DEFAULT_MAX_RANGE_DAYS
+    maxRangeDays: DEFAULT_MAX_RANGE_DAYS,
+    timeZone: DEFAULT_TIMEZONE
   })
 
   useEffect(() => {
@@ -28,7 +30,8 @@ export function useSettings() {
         const s = meta?.settings || {}
         setSettings({
           showDebugButton: parseBool(s.show_debug_button),
-          maxRangeDays: parsePositiveInt(s.max_range_days, DEFAULT_MAX_RANGE_DAYS)
+          maxRangeDays: parsePositiveInt(s.max_range_days, DEFAULT_MAX_RANGE_DAYS),
+          timeZone: parseTimeZone(s.export_timezone, DEFAULT_TIMEZONE)
         })
       })
       .catch(() => {
@@ -53,4 +56,18 @@ function parseBool(value) {
 function parsePositiveInt(value, fallback) {
   const n = parseInt(value, 10)
   return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+// Accept a valid IANA timezone string; fall back to `fallback` otherwise. An
+// unrecognized zone makes Intl.DateTimeFormat throw, so validate up front.
+function parseTimeZone(value, fallback) {
+  if (typeof value !== 'string' || !value.trim()) return fallback
+  const zone = value.trim()
+  try {
+    // Throws a RangeError for an invalid time zone identifier.
+    Intl.DateTimeFormat('en-US', { timeZone: zone }).format()
+    return zone
+  } catch {
+    return fallback
+  }
 }

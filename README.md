@@ -44,12 +44,17 @@ value as the corresponding Zendesk user id.
 #### Time Zone For Rendering And Day Assignment
 
 All shift and time-off timestamps arrive as Unix times, and the chosen time zone
-affects two things at once: the `HH:MM` strings shown in each cell and the
-day-column a given shift is assigned to. The app renders and buckets everything
-in **UTC**, which keeps exports reproducible and unambiguous across users and
-machines. The trade-off, worth noting for anyone comparing the export against the
-scheduling tool, is that these times may not match the local times a scheduler
-sees in the WFM UI.
+affects three things at once: the `HH:MM` strings shown in each cell, the
+day-column a given shift is assigned to, and the midnight-to-midnight bounds of
+the time-off fetch window. The zone is a configurable installation setting,
+`export_timezone` (any IANA zone name, e.g. `Europe/Warsaw`, `UTC`,
+`America/New_York`), defaulting to **Europe/Warsaw**. Using a fixed *named* zone
+— rather than the runner's browser zone — keeps exports reproducible across
+users and machines while matching the local times a scheduler sees in the WFM
+UI. IANA zones are DST-correct (Warsaw is UTC+1 in winter and UTC+2 in summer),
+which a fixed numeric offset would not be. Because the zone drives day
+assignment too, a shift that crosses local midnight is filed under the correct
+local day rather than its UTC day.
 
 #### Columns And Header Rows
 
@@ -157,9 +162,10 @@ A few things to do outside the prompts, per Zendesk's guidance:
   **nav bar** location.
 - The WFM API is a private API App Builder does not know, so Prompt 3 includes a
   sample request and response to teach it the shape — keep that detail intact.
-- The app settings introduced in Prompt 9 (maximum date range and the Debug
-  button toggle) are configured per installation from the **Settings** tab; the
-  prompt only declares them and wires the app to read their values.
+- The app settings introduced in Prompts 9 and 10 (maximum date range, Debug
+  button toggle, and export time zone) are configured per installation from the
+  **Settings** tab; the prompts only declare them and wire the app to read their
+  values.
 
 ### Prompt 1 — Scaffold The App And Date Range Controls
 
@@ -309,3 +315,26 @@ A few things to do outside the prompts, per Zendesk's guidance:
 > Read both settings from the app's installation metadata when the app loads, and
 > fall back to the defaults (31 days, Debug button hidden) while the metadata is
 > still loading or if it cannot be read.
+
+### Prompt 10 — Make The Time Zone Configurable
+
+> Right now shift times and day columns are computed in UTC. Add a third
+> installation setting, `export_timezone`, a text parameter holding an IANA time
+> zone name (for example `Europe/Warsaw`, `UTC`, or `America/New_York`) and
+> defaulting to `Europe/Warsaw`. Give it a label and help text for the Settings
+> tab, and read it alongside the other settings, falling back to `Europe/Warsaw`
+> if it is missing or not a valid time zone.
+>
+> Use this zone consistently for every wall-clock decision, not just the
+> displayed time. Convert each shift's and time off's start and end to `HH:MM` in
+> this zone; decide which day column an entry belongs to using the calendar date
+> in this zone (so a shift that crosses local midnight lands on the correct local
+> day, which may differ from its UTC day); and compute the time-off fetch window
+> as midnight-to-midnight of the selected range in this zone. Use the platform's
+> built-in time zone support so daylight-saving transitions are handled correctly
+> (for instance Warsaw is UTC+1 in winter and UTC+2 in summer) rather than
+> applying a fixed numeric offset.
+>
+> Show the active time zone in the preview heading (for example "… — times in
+> Europe/Warsaw") so it is clear which zone the exported times are in. The times
+> in the preview table and the downloaded CSV must match exactly.
