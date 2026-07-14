@@ -53,9 +53,14 @@ async function fetchPublicVariant(client, startDate, endDate, publishedValue) {
       pages.push(body)
       const r = Array.isArray(body?.data) ? body.data : []
       rows.push(...r)
-      const total = body?.metadata?.total
+      // `metadata.total` is the PAGE count, not the row count (e.g. page 1 of a
+      // 4-page result reports `{ currentPage: 1, total: 4 }`). Stop once we have
+      // fetched the last page, or on an empty page.
+      const meta = body?.metadata || {}
+      const totalPages = typeof meta.total === 'number' ? meta.total : null
+      const currentPage = typeof meta.currentPage === 'number' ? meta.currentPage : page
       if (r.length === 0) break
-      if (typeof total === 'number' && rows.length >= total) break
+      if (totalPages != null && currentPage >= totalPages) break
     }
   } catch (e) {
     error = { message: String(e?.message || e), raw: safeErr(e) }

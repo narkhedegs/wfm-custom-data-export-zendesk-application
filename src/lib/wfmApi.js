@@ -37,10 +37,13 @@ const USERS_CHUNK = 100
  *   a boolean `published` flag)
  */
 export async function fetchShifts(client, startDate, endDate, mode = 'published') {
+  const seen = new Set()
   const all = []
-  let page = 1
+  // Widest page seen so far — used to detect the final (short) page without
+  // hard-coding the server's page size (observed to be 1000).
+  let maxPageRows = 0
 
-  for (; page <= MAX_PAGES; page++) {
+  for (let page = 1; page <= MAX_PAGES; page++) {
     // 'draft' mode omits `published` entirely (the raw union); 'published'
     // sends `published: 1` for the committed-only schedule.
     const data = {
@@ -63,36 +66,38 @@ export async function fetchShifts(client, startDate, endDate, mode = 'published'
 
     const body = parseBody(res)
     const rows = Array.isArray(body?.data) ? body.data : []
-    all.push(...rows)
 
-    // Stop when we have collected everything the API reports, or this page was
-    // short/empty (defensive: `total` is the grand total across all pages).
-    const total = body?.metadata?.total
-    if (rows.length === 0) break
-    if (typeof total === 'number' && all.length >= total) break
-  }
-
-  // Defensive de-dup by shift id: the union should already be disjoint, but if
-  // the API ever returns a shift twice we must not double-count it in a cell.
-  return dedupeById(all)
-}
-
-// Remove duplicate shifts by their stable `id`, keeping first occurrence.
-// Shifts without an `id` are always kept (can't be judged duplicates).
-function dedupeById(shifts) {
-  const seen = new Set()
-  const out = []
-  for (const s of shifts) {
-    const id = s?.id
-    if (id == null) {
-      out.push(s)
-      continue
+    // Collect only shifts we haven't already seen. De-duping inline (rather
+    // than once at the end) means a server that ignores `page` and re-serves
+    // the same rows contributes zero new shifts and stops the loop below,
+    // instead of inflating counts or spinning until MAX_PAGES.
+    let added = 0
+    for (const s of rows) {
+      const id = s?.id
+      if (id != null) {
+        if (seen.has(id)) continue
+        seen.add(id)
+      }
+      all.push(s)
+      added++
     }
-    if (seen.has(id)) continue
-    seen.add(id)
-    out.push(s)
+
+    // Stop conditions. NOTE: `metadata.total` is the number of PAGES, not the
+    // row count (confirmed against the live API: page 1 of a 4-page result
+    // reports `{ currentPage: 1, total: 4 }`). An earlier build wrongly treated
+    // it as a row total and stopped after page 1, truncating large schedules to
+    // the first ~1000 shifts (the first N agents alphabetically).
+    const meta = body?.metadata || {}
+    const totalPages = typeof meta.total === 'number' ? meta.total : null
+    const currentPage = typeof meta.currentPage === 'number' ? meta.currentPage : page
+
+    if (added === 0) break // empty page, or a page of only duplicates
+    if (totalPages != null && currentPage >= totalPages) break // last page by metadata
+    if (rows.length < maxPageRows) break // short page ⇒ last page (metadata absent)
+    maxPageRows = Math.max(maxPageRows, rows.length)
   }
-  return out
+
+  return all
 }
 
 /**
